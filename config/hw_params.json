@@ -1,0 +1,7 @@
+{
+  "belt_steps_per_sec": 2000,
+  "t_fixed": 0.4,
+  "t_hold": 0.8,
+  "t_return": 0.4,
+  "ir_debounce_ms": 500
+}
