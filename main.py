@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import struct
 import threading
 import time
@@ -17,15 +18,19 @@ from PyQt6.QtWidgets import QApplication
 from dashboard import DashboardApp
 
 # ==================== 기본 상수 (Defaults) ====================
-IR_TO_SORTER_DISTANCE_STEPS = 10000
+IR_TO_SORTER_DISTANCE_STEPS = 100000
 BELT_STEPS_PER_SECOND = 2000
-SORTER_TARGET_DEGREE = 90.0
+SORTER_TARGET_DEGREE = 45.0
 MOTOR_FULL_STEPS_PER_REV = 200
 MOTOR_MICROSTEP_SETTING = 16
-SERIAL_PORT = 'COM3'
-BAUD_RATE = 115200
-CAMERA_INDEX = 0
-AI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'
+SERIAL_PORT = 'COM3'        # 시리얼 포트
+BAUD_RATE = 115200          
+CAMERA_INDEX = 0            # 카메라 번호
+AI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'     # AI 모델
+DEFAULT_AI_PROMPT = (
+    "Analyze this object. If the object color is closer to blue, response exactly with '0'. "
+    "If it is closer to yellow, response exactly with '1'. Respond only with a single digit, either '1' or '0'."
+)
 
 CONFIG_PATH = Path('config/hw_params.json')
 
@@ -188,7 +193,7 @@ def init_hardware():
     return cap, ser
 
 
-def classify_image_with_ai(client: genai.Client, frame):
+def classify_image_with_ai(client: genai.Client, frame, prompt_text: str):
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
     success, encoded_img = cv2.imencode('.jpg', frame, encode_param)
 
@@ -197,11 +202,6 @@ def classify_image_with_ai(client: genai.Client, frame):
         return 0, '이미지 인코딩 실패'
 
     image_bytes = encoded_img.tobytes()
-    prompt_text = (
-        "Analyze this object. If the object color is closer to blue, response exactly with '0'. "
-        "If it is closer to yellow, response exactly with '1'. Respond only with a single digit, either '1' or '0'."
-    )
-
     try:
         print('AI 모델로 이미지 전송 중...')
 
@@ -225,6 +225,14 @@ def classify_image_with_ai(client: genai.Client, frame):
 
         result_text = response.text.strip()
         print(f'AI 응답 결과: {result_text}')
+
+        # [] 내부 숫자를 우선 파싱한다. 예: "[1]", "판정: [0]"
+        match = re.search(r'\[\s*(-?\d+)\s*\]', result_text)
+        if match:
+            parsed_num = int(match.group(1))
+            return (1 if parsed_num == 1 else 0), result_text
+
+        # 하위 호환: 기존 단일 숫자 응답도 허용
         if result_text == '1':
             return 1, result_text
         if result_text == '0':
@@ -268,6 +276,7 @@ class HardwareController(QThread):
         self._count_lock = threading.Lock()
         self._ai_semaphore = threading.Semaphore(4)
         self.hw_config = hw_config
+        self.prompt_text = DEFAULT_AI_PROMPT
         self.cached_coeffs = calculate_5th_polynomial_coeffs(target_steps)
 
         self._config_lock = threading.Lock()
@@ -275,6 +284,13 @@ class HardwareController(QThread):
 
     def trigger_test_event(self):
         self._ir_trigger_event.set()
+
+    @pyqtSlot(str)
+    def update_prompt(self, prompt_text: str):
+        prompt_text = (prompt_text or '').strip()
+        if prompt_text:
+            self.prompt_text = prompt_text
+            print('AI 프롬프트가 대시보드에서 업데이트되었습니다.')
 
     @pyqtSlot(dict)
     def request_settings_apply(self, cfg_dict: dict):
@@ -396,7 +412,7 @@ class HardwareController(QThread):
                 classify_flag = 0
                 raw_text = ''
                 if client and frame_copy is not None:
-                    classify_flag, raw_text = classify_image_with_ai(client, frame_copy)
+                    classify_flag, raw_text = classify_image_with_ai(client, frame_copy, self.prompt_text)
                 else:
                     import random
 
@@ -521,7 +537,7 @@ def main():
     print(f'설정된 목표 이동 스텝 수(종단점): {target_steps} steps')
 
     app = QApplication([])
-    dashboard = DashboardApp()
+    dashboard = DashboardApp(initial_prompt=DEFAULT_AI_PROMPT)
     dashboard.set_hardware_info(
         SORTER_TARGET_DEGREE,
         hw_config.belt_steps_per_sec,
@@ -548,6 +564,7 @@ def main():
 
     dashboard.test_ir_signal.connect(hw_thread.trigger_test_event)
     dashboard.settings_save_requested.connect(hw_thread.request_settings_apply)
+    dashboard.prompt_save_requested.connect(hw_thread.update_prompt)
 
     def handle_settings_result(success: bool, message: str, applied_values: dict):
         nonlocal hw_config

@@ -166,8 +166,9 @@ class HardwareSettingsDialog(QDialog):
 class DashboardApp(QMainWindow):
     test_ir_signal = pyqtSignal()
     settings_save_requested = pyqtSignal(dict)
+    prompt_save_requested = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, initial_prompt: str):
         super().__init__()
         self.setWindowTitle('AI Conveyor Sorting System Dashboard')
         self.resize(1200, 800)
@@ -180,6 +181,7 @@ class DashboardApp(QMainWindow):
             't_return': 0.4,
             'ir_debounce_ms': 500,
         }
+        self.initial_prompt = initial_prompt
         self._settings_dialog = None
 
         self.central_widget = QWidget()
@@ -194,48 +196,78 @@ class DashboardApp(QMainWindow):
         self.lbl_live_feed = QLabel('라이브 스트리밍 대기 중...')
         self.lbl_live_feed.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_live_feed.setStyleSheet('background-color: #000000; border: 1px solid #555;')
-        self.lbl_live_feed.setMinimumSize(320, 240)
+        self.lbl_live_feed.setMinimumSize(320, 180)
 
         lbl_prompt_title = QLabel('현재 AI 프롬프트')
         lbl_prompt_title.setFont(QFont('Arial', 12, QFont.Weight.Bold))
         self.txt_prompt = QTextEdit()
-        self.txt_prompt.setReadOnly(True)
-        self.txt_prompt.setStyleSheet('background-color: #2b2b2b; color: #FFFFFF; border: 1px solid #555;')
-        self.txt_prompt.setText("Analyze this object.\nIf the object color is closer to blue, response exactly with '0'.\nIf it is closer to yellow, response exactly with '1'.\nRespond only with a single digit, either '1' or '0'.")
-        self.txt_prompt.setMaximumHeight(100)
+        self.txt_prompt.setStyleSheet('background-color: #2b2b2b; color: #FFFFFF; border: 1px solid #555; font-size: 11pt;')
+        self.txt_prompt.setText(self.initial_prompt)
+        self.txt_prompt.setMinimumHeight(100)
+        self.btn_save_prompt = QPushButton('프롬프트 저장')
+        self.btn_save_prompt.setStyleSheet(
+            'QPushButton {background-color: #607D8B; color: white; font-weight: bold; padding: 8px; border-radius: 4px;}'
+            'QPushButton:pressed {background-color: #455A64; padding-top: 9px; padding-bottom: 7px;}'
+        )
+        self.btn_save_prompt.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save_prompt.clicked.connect(self._on_save_prompt)
 
         lbl_ai_img_title = QLabel('AI 전송 이미지 (마지막 캡처)')
         lbl_ai_img_title.setFont(QFont('Arial', 12, QFont.Weight.Bold))
         self.lbl_ai_img = QLabel('No Image Sent Yet')
         self.lbl_ai_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_ai_img.setStyleSheet('background-color: #222222; border: 1px solid #555;')
-        self.lbl_ai_img.setMinimumSize(320, 240)
+        self.lbl_ai_img.setMinimumSize(320, 180)
 
         lbl_ai_res_title = QLabel('AI 모델 응답 내용 (전체)')
         lbl_ai_res_title.setFont(QFont('Arial', 12, QFont.Weight.Bold))
         self.txt_ai_res = QTextEdit()
         self.txt_ai_res.setReadOnly(True)
-        self.txt_ai_res.setStyleSheet('background-color: #2b2b2b; color: #FFFFFF; border: 1px solid #555; font-size: 13pt;')
+        self.txt_ai_res.setStyleSheet('background-color: #2b2b2b; color: #FFFFFF; border: 1px solid #555; font-size: 11pt;')
         self.txt_ai_res.setPlaceholderText('AI 응답 대기 중...')
-        self.txt_ai_res.setMaximumHeight(100)
+        self.txt_ai_res.setMinimumHeight(120)
 
         vbox = QVBoxLayout()
-        vbox.addWidget(QLabel("<h2 style='color:#03A9F4;'>Column 1: Visual & I/O</h2>"))
-        vbox.addWidget(self.lbl_live_feed, stretch=2)
+        vbox.addWidget(self.lbl_live_feed, stretch=3)
         vbox.addWidget(lbl_prompt_title)
-        vbox.addWidget(self.txt_prompt, stretch=1)
+        vbox.addWidget(self.txt_prompt, stretch=2)
+        vbox.addWidget(self.btn_save_prompt)
         vbox.addWidget(lbl_ai_img_title)
-        vbox.addWidget(self.lbl_ai_img, stretch=2)
+        vbox.addWidget(self.lbl_ai_img, stretch=3)
         vbox.addWidget(lbl_ai_res_title)
-        vbox.addWidget(self.txt_ai_res)
+        vbox.addWidget(self.txt_ai_res, stretch=2)
 
         container = QWidget()
         container.setLayout(vbox)
         self.layout.addWidget(container, 0, 0)
 
+    def _on_save_prompt(self):
+        prompt_text = self.txt_prompt.toPlainText().strip()
+        if not prompt_text:
+            return
+
+        self.prompt_save_requested.emit(prompt_text)
+        self._show_prompt_saved_feedback()
+
+    def _show_prompt_saved_feedback(self):
+        self.btn_save_prompt.setEnabled(False)
+        self.btn_save_prompt.setText('저장되었습니다')
+        self.btn_save_prompt.setStyleSheet(
+            'QPushButton {background-color: #4CAF50; color: white; font-weight: bold; padding: 8px; border-radius: 4px;}'
+            'QPushButton:pressed {background-color: #3d8f40; padding-top: 9px; padding-bottom: 7px;}'
+        )
+        QTimer.singleShot(2000, self._restore_prompt_save_button)
+
+    def _restore_prompt_save_button(self):
+        self.btn_save_prompt.setText('프롬프트 저장')
+        self.btn_save_prompt.setEnabled(True)
+        self.btn_save_prompt.setStyleSheet(
+            'QPushButton {background-color: #607D8B; color: white; font-weight: bold; padding: 8px; border-radius: 4px;}'
+            'QPushButton:pressed {background-color: #455A64; padding-top: 9px; padding-bottom: 7px;}'
+        )
+
     def init_column2(self):
         vbox = QVBoxLayout()
-        vbox.addWidget(QLabel("<h2 style='color:#FF9800;'>Column 2: Performance & Logic</h2>"))
 
         self.plot_latency = pg.PlotWidget(title='AI API 지연 시간 (초 - Latency)')
         self.plot_latency.setBackground('#2b2b2b')
@@ -329,7 +361,6 @@ class DashboardApp(QMainWindow):
 
     def init_column3(self):
         vbox = QVBoxLayout()
-        vbox.addWidget(QLabel("<h2 style='color:#9C27B0;'>Column 3: Analytics & Hardware</h2>"))
 
         self.plot_poly = pg.PlotWidget(title='Rest-to-Rest 5차 다항식 궤적 최적화')
         self.plot_poly.setBackground('#2b2b2b')
@@ -420,6 +451,16 @@ class DashboardApp(QMainWindow):
     def update_time(self):
         self.lbl_sys_time.setText(f"시간: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def open_settings_dialog(self):
         if self._settings_dialog is not None and self._settings_dialog.isVisible():
             self._settings_dialog.activateWindow()
@@ -500,6 +541,9 @@ class DashboardApp(QMainWindow):
         self.table_history.setItem(row, 2, QTableWidgetItem(f'{latency:.3f}'))
         self.table_history.scrollToBottom()
 
+        # 5초 후 상태 라벨 초기화 타이머 시작
+        QTimer.singleShot(5000, self.reset_status_labels)
+
     @pyqtSlot(float, int)
     def add_missed_result(self, latency, classify_flag):
         self.latency_data.append(latency)
@@ -528,6 +572,9 @@ class DashboardApp(QMainWindow):
         self.table_history.setItem(row, 2, item_latency)
         self.table_history.scrollToBottom()
 
+        # 3초 후 상태 라벨 초기화 타이머 시작
+        QTimer.singleShot(3000, self.reset_status_labels)
+
     @pyqtSlot(int)
     def update_queue_count(self, count):
         self.lbl_queue.setText(f'처리 대기열: {count} 건')
@@ -544,6 +591,26 @@ class DashboardApp(QMainWindow):
     def update_api_status(self, api_ok):
         color = '#4CAF50' if api_ok else '#F44336'
         self.lbl_api_led.setStyleSheet(f'color: {color}; font-size: 22px;')
+
+    def reset_status_labels(self):
+        """결과 표시 후 라벨들을 초기 대기 상태로 복구"""
+        # 현재 처리 중인 대기열이 있다면 초기화하지 않음 (선택 사항)
+        try:
+            queue_text = self.lbl_queue.text()
+            if "0 건" not in queue_text:
+                return
+        except:
+            pass
+
+        self.lbl_flag.setText('-')
+        self.lbl_flag.setStyleSheet('color: #BDBDBD; background-color: #2b2b2b; border: 3px solid #555; border-radius: 8px; padding: 4px;')
+        self.lbl_flag.setFixedHeight(72)
+
+        self.lbl_status.setText('대기 상태')
+        self.lbl_status.setStyleSheet('color: #BDBDBD;')
+
+        self.lbl_eta.setText('ETA: -- 초')
+        self.lbl_eta.setStyleSheet('color: #4CAF50; border: 2px solid #4CAF50; padding: 10px;')
 
     def set_hardware_info(self, target_deg, belt_speed, microstep,
                           full_steps_rev=None, ir_distance=None,
