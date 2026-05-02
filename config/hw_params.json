@@ -1,5 +1,6 @@
 {
   "belt_steps_per_sec": 10000,
+  "ir_to_sorter_distance_steps": 100000,
   "t_fixed": 0.4,
   "t_hold": 0.8,
   "t_return": 0.4,
