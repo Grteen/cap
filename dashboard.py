@@ -77,6 +77,13 @@ class HardwareSettingsDialog(QDialog):
         self.spin_ir_debounce.setValue(int(initial_values.get('ir_debounce_ms', 500)))
         form.addRow('IR_DEBOUNCE_MS', self.spin_ir_debounce)
 
+        self.spin_ai_delay = QDoubleSpinBox()
+        self.spin_ai_delay.setRange(0.0, 10.0)
+        self.spin_ai_delay.setDecimals(3)
+        self.spin_ai_delay.setSingleStep(0.05)
+        self.spin_ai_delay.setValue(float(initial_values.get('ai_forced_delay_sec', 0.0)))
+        form.addRow('AI_FORCED_DELAY_SEC', self.spin_ai_delay)
+
         self.lbl_status = QLabel('')
         self.lbl_status.setStyleSheet('color: #BDBDBD;')
 
@@ -107,6 +114,7 @@ class HardwareSettingsDialog(QDialog):
             't_hold': float(self.spin_t_hold.value()),
             't_return': float(self.spin_t_return.value()),
             'ir_debounce_ms': int(self.spin_ir_debounce.value()),
+            'ai_forced_delay_sec': float(self.spin_ai_delay.value()),
         }
 
     def _is_dirty(self) -> bool:
@@ -120,12 +128,13 @@ class HardwareSettingsDialog(QDialog):
         self.btn_close.setEnabled(not pending)
 
     def _reset_to_saved(self):
-        self.spin_belt.setValue(int(self._last_saved['belt_steps_per_sec']))
-        self.spin_ir_distance.setValue(int(self._last_saved['ir_to_sorter_distance_steps']))
-        self.spin_t_fixed.setValue(float(self._last_saved['t_fixed']))
-        self.spin_t_hold.setValue(float(self._last_saved['t_hold']))
-        self.spin_t_return.setValue(float(self._last_saved['t_return']))
-        self.spin_ir_debounce.setValue(int(self._last_saved['ir_debounce_ms']))
+        self.spin_belt.setValue(int(self._last_saved.get('belt_steps_per_sec', 2000)))
+        self.spin_ir_distance.setValue(int(self._last_saved.get('ir_to_sorter_distance_steps', 100000)))
+        self.spin_t_fixed.setValue(float(self._last_saved.get('t_fixed', 0.4)))
+        self.spin_t_hold.setValue(float(self._last_saved.get('t_hold', 0.8)))
+        self.spin_t_return.setValue(float(self._last_saved.get('t_return', 0.4)))
+        self.spin_ir_debounce.setValue(int(self._last_saved.get('ir_debounce_ms', 500)))
+        self.spin_ai_delay.setValue(float(self._last_saved.get('ai_forced_delay_sec', 0.0)))
         self.lbl_status.setText('마지막 저장값으로 되돌렸습니다.')
         self.lbl_status.setStyleSheet('color: #03A9F4;')
 
@@ -187,6 +196,7 @@ class DashboardApp(QMainWindow):
             't_hold': 0.8,
             't_return': 0.4,
             'ir_debounce_ms': 500,
+            'ai_forced_delay_sec': 0.0,
         }
         self.initial_prompt = initial_prompt
         self._settings_dialog = None
@@ -344,6 +354,12 @@ class DashboardApp(QMainWindow):
         self.lbl_queue.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_queue.setStyleSheet('color: #4CAF50; padding: 4px;')
         vbox.addWidget(self.lbl_queue)
+
+        self.lbl_ai_forced_delay = QLabel('AI 강제 지연: 0.000 초')
+        self.lbl_ai_forced_delay.setFont(QFont('Arial', 12))
+        self.lbl_ai_forced_delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_ai_forced_delay.setStyleSheet('color: #BDBDBD;')
+        vbox.addWidget(self.lbl_ai_forced_delay)
         vbox.addSpacing(6)
 
         self.btn_test = QPushButton('테스트 동작 (IR 센서 시뮬레이션)')
@@ -488,6 +504,8 @@ class DashboardApp(QMainWindow):
 
     def set_runtime_settings(self, settings: dict):
         self.runtime_settings = dict(settings)
+        forced_delay = float(self.runtime_settings.get('ai_forced_delay_sec', 0.0))
+        self.lbl_ai_forced_delay.setText(f'AI 강제 지연: {forced_delay:.3f} 초')
 
     @pyqtSlot(object)
     def set_live_frame(self, frame):
@@ -591,7 +609,8 @@ class DashboardApp(QMainWindow):
     def set_hardware_info(self, target_deg, belt_speed, microstep,
                           full_steps_rev=None, ir_distance=None,
                           target_steps=None, serial_port=None,
-                          baud_rate=None, camera_index=None, ai_model=None):
+                          baud_rate=None, camera_index=None, ai_model=None,
+                          ai_forced_delay_sec=None):
         updates = {
             '목표 각도': f'{target_deg}',
             '벨트 속도': f'{belt_speed}',

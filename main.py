@@ -56,10 +56,11 @@ class HardwareConfig:
     t_hold: float
     t_return: float
     ir_debounce_ms: int
+    ai_forced_delay_sec: float
 
     @classmethod
     def defaults(cls) -> 'HardwareConfig':
-        return cls(BELT_STEPS_PER_SECOND, IR_TO_SORTER_DISTANCE_STEPS, 0.4, 0.8, 0.4, 500)
+        return cls(BELT_STEPS_PER_SECOND, IR_TO_SORTER_DISTANCE_STEPS, 0.4, 0.8, 0.4, 500, 0.0)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'HardwareConfig':
@@ -70,6 +71,7 @@ class HardwareConfig:
             float(data['t_hold']),
             float(data['t_return']),
             int(data['ir_debounce_ms']),
+            float(data.get('ai_forced_delay_sec', 0.0)),
         )
         cfg.validate()
         return cfg
@@ -84,6 +86,8 @@ class HardwareConfig:
                 raise ValueError(f'{name} 범위는 0.1~5.0 이어야 합니다.')
         if not (100 <= self.ir_debounce_ms <= 5000):
             raise ValueError('ir_debounce_ms 범위는 100~5000 이어야 합니다.')
+        if not (0.0 <= self.ai_forced_delay_sec <= 10.0):
+            raise ValueError('ai_forced_delay_sec 범위는 0.0~10.0 이어야 합니다.')
 
 
 def ensure_config_dir():
@@ -279,6 +283,22 @@ class HardwareController(QThread):
         except Exception as exc:
             self.settings_apply_result.emit(False, f'입력값 검증 실패: {exc}', {})
             return
+
+        hw_fields_changed = (
+            new_cfg.belt_steps_per_sec != self.hw_config.belt_steps_per_sec
+            or new_cfg.ir_to_sorter_distance_steps != self.hw_config.ir_to_sorter_distance_steps
+            or new_cfg.t_fixed != self.hw_config.t_fixed
+            or new_cfg.t_hold != self.hw_config.t_hold
+            or new_cfg.t_return != self.hw_config.t_return
+            or new_cfg.ir_debounce_ms != self.hw_config.ir_debounce_ms
+        )
+
+        # AI 억지 지연값은 아두이노와 무관한 로컬 설정이므로, 단독 변경 시 시리얼 미연결이어도 적용한다.
+        if not hw_fields_changed:
+            self.hw_config = new_cfg
+            self.settings_apply_result.emit(True, 'AI 지연 설정 로컬 적용 완료', asdict(new_cfg))
+            return
+
         ok_cfg, msg_cfg = self._send_packet_with_ack(build_cfg_packet(new_cfg), ACK_CFG_OK, ACK_CFG_ERR, ACK_CFG_BUSY, 3, 0.25)
         if not ok_cfg:
             self.settings_apply_result.emit(False, '소터 동작 중 또는 ACK 실패', {})
@@ -294,6 +314,8 @@ class HardwareController(QThread):
     def process_classification_task(self, frame_copy, start_time):
         try:
             with self._ai_semaphore:
+                if self.hw_config.ai_forced_delay_sec > 0:
+                    time.sleep(self.hw_config.ai_forced_delay_sec)
                 classify_flag, raw_text = classify_image_with_ai(self.client, frame_copy, self.prompt_text) if (self.client and frame_copy is not None) else (0, '0')
 
             api_delay = time.time() - start_time
@@ -390,7 +412,19 @@ def main():
 
     app = QApplication([])
     dashboard = DashboardApp(initial_prompt=DEFAULT_AI_PROMPT)
-    dashboard.set_hardware_info(SORTER_TARGET_DEGREE, hw_config.belt_steps_per_sec, MOTOR_MICROSTEP_SETTING, MOTOR_FULL_STEPS_PER_REV, hw_config.ir_to_sorter_distance_steps, target_steps, SERIAL_PORT, BAUD_RATE, CAMERA_INDEX, AI_MODEL_NAME)
+    dashboard.set_hardware_info(
+        SORTER_TARGET_DEGREE,
+        hw_config.belt_steps_per_sec,
+        MOTOR_MICROSTEP_SETTING,
+        MOTOR_FULL_STEPS_PER_REV,
+        hw_config.ir_to_sorter_distance_steps,
+        target_steps,
+        SERIAL_PORT,
+        BAUD_RATE,
+        CAMERA_INDEX,
+        AI_MODEL_NAME,
+        hw_config.ai_forced_delay_sec,
+    )
     dashboard.set_runtime_settings(asdict(hw_config))
     dashboard.show()
 
@@ -411,7 +445,19 @@ def main():
             try:
                 hw_config = HardwareConfig.from_dict(applied_values)
                 save_hw_config(hw_config)
-                dashboard.set_hardware_info(SORTER_TARGET_DEGREE, hw_config.belt_steps_per_sec, MOTOR_MICROSTEP_SETTING, MOTOR_FULL_STEPS_PER_REV, hw_config.ir_to_sorter_distance_steps, target_steps, SERIAL_PORT, BAUD_RATE, CAMERA_INDEX, AI_MODEL_NAME)
+                dashboard.set_hardware_info(
+                    SORTER_TARGET_DEGREE,
+                    hw_config.belt_steps_per_sec,
+                    MOTOR_MICROSTEP_SETTING,
+                    MOTOR_FULL_STEPS_PER_REV,
+                    hw_config.ir_to_sorter_distance_steps,
+                    target_steps,
+                    SERIAL_PORT,
+                    BAUD_RATE,
+                    CAMERA_INDEX,
+                    AI_MODEL_NAME,
+                    hw_config.ai_forced_delay_sec,
+                )
                 dashboard.set_runtime_settings(asdict(hw_config))
             except Exception as exc:
                 message = f'{message} (로컬 저장 실패: {exc})'
