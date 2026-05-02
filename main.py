@@ -4,6 +4,7 @@ import re
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -218,9 +219,10 @@ class HardwareController(QThread):
         self.cached_coeffs = calculate_5th_polynomial_coeffs(target_steps)
         self._config_lock = threading.Lock()
         self._pending_config_dict = None
-        self._unclassified_ids = []
         self._id_lock = threading.Lock()
+        self._pending_object_ids = deque()
         self._ir_trigger_event = threading.Event()
+        self._next_test_object_id = 1000000
 
     def trigger_test_event(self):
         self._ir_trigger_event.set()
@@ -252,8 +254,11 @@ class HardwareController(QThread):
                     if not line:
                         continue
                     if line.startswith('IR_DETECTED:'):
-                        with self._id_lock:
-                            self._unclassified_ids.append(int(line.split(':', 1)[1]))
+                        try:
+                            object_id = int(line.split(':', 1)[1])
+                            self._queue_object_id(object_id)
+                        except Exception:
+                            pass
                         continue
                     if line == ok_ack:
                         return True, ok_ack
@@ -311,7 +316,32 @@ class HardwareController(QThread):
         self.hw_config = new_cfg
         self.settings_apply_result.emit(True, '하드웨어 설정 적용 완료', asdict(new_cfg))
 
-    def process_classification_task(self, frame_copy, start_time):
+    def _queue_object_id(self, object_id: int):
+        with self._id_lock:
+            self._pending_object_ids.append(int(object_id))
+
+    def _drain_pending_object_ids(self) -> list[int]:
+        with self._id_lock:
+            ids = list(self._pending_object_ids)
+            self._pending_object_ids.clear()
+        return ids
+
+    def _spawn_classification_job(self, object_id: int, frame):
+        start_time = time.time()
+        frame_to_process = frame.copy() if frame is not None else None
+        if frame_to_process is not None:
+            self.ai_image_ready.emit(frame_to_process)
+        with self._count_lock:
+            self._pending_count += 1
+            count = self._pending_count
+        self.queue_updated.emit(count)
+        threading.Thread(
+            target=self.process_classification_task,
+            args=(object_id, frame_to_process, start_time),
+            daemon=True,
+        ).start()
+
+    def process_classification_task(self, object_id: int, frame_copy, start_time):
         try:
             with self._ai_semaphore:
                 if self.hw_config.ai_forced_delay_sec > 0:
@@ -319,12 +349,6 @@ class HardwareController(QThread):
                 classify_flag, raw_text = classify_image_with_ai(self.client, frame_copy, self.prompt_text) if (self.client and frame_copy is not None) else (0, '0')
 
             api_delay = time.time() - start_time
-            with self._id_lock:
-                object_id = self._unclassified_ids.pop(0) if self._unclassified_ids else None
-
-            if object_id is None:
-                return
-
             send_class_result_to_arduino(self.ser, object_id, classify_flag)
             self.classification_finished.emit(classify_flag, api_delay, object_id, self.cached_coeffs, raw_text)
         finally:
@@ -358,37 +382,23 @@ class HardwareController(QThread):
 
             if self._ir_trigger_event.is_set():
                 self._ir_trigger_event.clear()
-                with self._id_lock:
-                    object_id = (max(self._unclassified_ids) + 1) if self._unclassified_ids else 1000000
-                    self._unclassified_ids.append(object_id)
-                start_time = time.time()
-                frame_to_process = frame.copy() if (ret and frame is not None) else None
-                if frame_to_process is not None:
-                    self.ai_image_ready.emit(frame_to_process)
-                with self._count_lock:
-                    self._pending_count += 1
-                    count = self._pending_count
-                self.queue_updated.emit(count)
-                threading.Thread(target=self.process_classification_task, args=(frame_to_process, start_time), daemon=True).start()
+                object_id = self._next_test_object_id
+                self._next_test_object_id += 1
+                self._queue_object_id(object_id)
 
-            if self.ser and self.ser.in_waiting > 0:
+            if self.ser:
                 try:
-                    signal = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if signal.startswith('IR_DETECTED:'):
-                        object_id = int(signal.split(':', 1)[1])
-                        with self._id_lock:
-                            self._unclassified_ids.append(object_id)
-                        start_time = time.time()
-                        frame_to_process = frame.copy() if (ret and frame is not None) else None
-                        if frame_to_process is not None:
-                            self.ai_image_ready.emit(frame_to_process)
-                        with self._count_lock:
-                            self._pending_count += 1
-                            count = self._pending_count
-                        self.queue_updated.emit(count)
-                        threading.Thread(target=self.process_classification_task, args=(frame_to_process, start_time), daemon=True).start()
+                    while self.ser.in_waiting > 0:
+                        signal = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        if signal.startswith('IR_DETECTED:'):
+                            object_id = int(signal.split(':', 1)[1])
+                            self._queue_object_id(object_id)
                 except Exception:
                     pass
+
+            pending_ids = self._drain_pending_object_ids()
+            for object_id in pending_ids:
+                self._spawn_classification_job(object_id, frame if (ret and frame is not None) else None)
 
             time.sleep(0.01)
 

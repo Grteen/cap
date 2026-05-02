@@ -4,5 +4,6 @@
   "t_fixed": 0.4,
   "t_hold": 0.8,
   "t_return": 0.4,
-  "ir_debounce_ms": 1000
+  "ir_debounce_ms": 1000,
+  "ai_forced_delay_sec": 0.0
 }
