@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QImage, QPixmap
+from PyQt6.QtGui import QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -53,6 +53,11 @@ class HardwareSettingsDialog(QDialog):
         self.spin_t_fixed.setValue(float(initial_values.get('t_fixed', 0.4)))
         form.addRow('T_FIXED (sec)', self.spin_t_fixed)
 
+        self.spin_ir_distance = QSpinBox()
+        self.spin_ir_distance.setRange(1000, 5000000)
+        self.spin_ir_distance.setValue(int(initial_values.get('ir_to_sorter_distance_steps', 100000)))
+        form.addRow('IR_TO_SORTER_DISTANCE_STEPS', self.spin_ir_distance)
+
         self.spin_t_hold = QDoubleSpinBox()
         self.spin_t_hold.setRange(0.1, 5.0)
         self.spin_t_hold.setDecimals(3)
@@ -97,6 +102,7 @@ class HardwareSettingsDialog(QDialog):
     def _current_values(self) -> dict:
         return {
             'belt_steps_per_sec': int(self.spin_belt.value()),
+            'ir_to_sorter_distance_steps': int(self.spin_ir_distance.value()),
             't_fixed': float(self.spin_t_fixed.value()),
             't_hold': float(self.spin_t_hold.value()),
             't_return': float(self.spin_t_return.value()),
@@ -115,6 +121,7 @@ class HardwareSettingsDialog(QDialog):
 
     def _reset_to_saved(self):
         self.spin_belt.setValue(int(self._last_saved['belt_steps_per_sec']))
+        self.spin_ir_distance.setValue(int(self._last_saved['ir_to_sorter_distance_steps']))
         self.spin_t_fixed.setValue(float(self._last_saved['t_fixed']))
         self.spin_t_hold.setValue(float(self._last_saved['t_hold']))
         self.spin_t_return.setValue(float(self._last_saved['t_return']))
@@ -289,10 +296,10 @@ class DashboardApp(QMainWindow):
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setStyleSheet('color: #BDBDBD;')
 
-        self.lbl_eta = QLabel('ETA: -- 초')
-        self.lbl_eta.setFont(QFont('Arial', 32, QFont.Weight.Bold))
-        self.lbl_eta.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_eta.setStyleSheet('color: #4CAF50; border: 2px solid #4CAF50; padding: 10px;')
+        self.lbl_object_id = QLabel('Object ID: --')
+        self.lbl_object_id.setFont(QFont('Arial', 32, QFont.Weight.Bold))
+        self.lbl_object_id.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_object_id.setStyleSheet('color: #4CAF50; border: 2px solid #4CAF50; padding: 10px;')
 
         self.lbl_sys_time = QLabel('발생 시각: --:--:--')
         self.lbl_sys_time.setFont(QFont('Arial', 12))
@@ -325,7 +332,7 @@ class DashboardApp(QMainWindow):
         vbox.addSpacing(6)
         vbox.addWidget(QLabel("<h3 style='color:#FFF;'>분류 진행 상태</h3>"))
         vbox.addWidget(self.lbl_status)
-        vbox.addWidget(self.lbl_eta)
+        vbox.addWidget(self.lbl_object_id)
         vbox.addSpacing(20)
         vbox.addWidget(QLabel("<h3 style='color:#FFF;'>시스템 정보 연결 상태</h3>"))
         vbox.addWidget(self.lbl_sys_time)
@@ -504,8 +511,8 @@ class DashboardApp(QMainWindow):
             pix = QPixmap.fromImage(qimg).scaledToHeight(pix_h, Qt.TransformationMode.SmoothTransformation)
             self.lbl_ai_img.setPixmap(pix)
 
-    @pyqtSlot(int, float, float, tuple, str)
-    def add_classification_result(self, result_flag, latency, eta, coeffs, raw_text):
+    @pyqtSlot(int, float, int, tuple, str)
+    def add_classification_result(self, result_flag, latency, object_id, coeffs, raw_text):
         self.txt_ai_res.setText(raw_text)
 
         if result_flag == 1:
@@ -519,7 +526,7 @@ class DashboardApp(QMainWindow):
             self.lbl_status.setText('분류 패스됨 (0)')
             self.lbl_status.setStyleSheet('color: #03A9F4;')
 
-        self.lbl_eta.setText(f'ETA (잔여 시간): {eta:.3f} s')
+        self.lbl_object_id.setText(f'Object ID: {object_id}')
 
         self.latency_data.append(latency)
         if len(self.latency_data) > 30:
@@ -543,37 +550,6 @@ class DashboardApp(QMainWindow):
 
         # 5초 후 상태 라벨 초기화 타이머 시작
         QTimer.singleShot(5000, self.reset_status_labels)
-
-    @pyqtSlot(float, int)
-    def add_missed_result(self, latency, classify_flag):
-        self.latency_data.append(latency)
-        if len(self.latency_data) > 30:
-            self.latency_data.pop(0)
-        self.latency_curve.setData(self.latency_data)
-
-        row = self.table_history.rowCount()
-        self.table_history.insertRow(row)
-        self.table_history.setItem(row, 0, QTableWidgetItem(time.strftime('%H:%M:%S')))
-
-        if classify_flag == 1:
-            item_result = QTableWidgetItem('⚠ 미분류 (ETA 초과, 분류 필요했음)')
-            item_result.setForeground(QColor('#FF5252'))
-            self.lbl_status.setText('⚠ 미분류 경고')
-            self.lbl_status.setStyleSheet('color: #FF5252;')
-            self.lbl_flag.setText('!')
-            self.lbl_flag.setStyleSheet('color: #FFFFFF; background-color: #FF5252; border: 3px solid #FF5252; border-radius: 8px; padding: 4px;')
-        else:
-            item_result = QTableWidgetItem('ETA 초과 (패스, 영향 없음)')
-            item_result.setForeground(QColor('#888888'))
-
-        self.table_history.setItem(row, 1, item_result)
-        item_latency = QTableWidgetItem(f'{latency:.3f}')
-        item_latency.setForeground(QColor('#FF5252' if classify_flag == 1 else '#888888'))
-        self.table_history.setItem(row, 2, item_latency)
-        self.table_history.scrollToBottom()
-
-        # 3초 후 상태 라벨 초기화 타이머 시작
-        QTimer.singleShot(3000, self.reset_status_labels)
 
     @pyqtSlot(int)
     def update_queue_count(self, count):
@@ -609,8 +585,8 @@ class DashboardApp(QMainWindow):
         self.lbl_status.setText('대기 상태')
         self.lbl_status.setStyleSheet('color: #BDBDBD;')
 
-        self.lbl_eta.setText('ETA: -- 초')
-        self.lbl_eta.setStyleSheet('color: #4CAF50; border: 2px solid #4CAF50; padding: 10px;')
+        self.lbl_object_id.setText('Object ID: --')
+        self.lbl_object_id.setStyleSheet('color: #4CAF50; border: 2px solid #4CAF50; padding: 10px;')
 
     def set_hardware_info(self, target_deg, belt_speed, microstep,
                           full_steps_rev=None, ir_distance=None,
