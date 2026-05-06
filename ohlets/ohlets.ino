@@ -19,9 +19,9 @@ const int IR_SENSOR_PIN = 7;
 const long TIMER_PERIOD_US = 100;
 const long SERIAL_BAUD_RATE = 115200;
 
-const unsigned int SORTER_STEP_PULSE_US = 8;
-const unsigned int BELT_STEP_PULSE_US = 4;
-const unsigned int BELT_RAMP_STEP_HZ = 20;
+const unsigned int SORTER_STEP_PULSE_US = 6;
+const unsigned int BELT_STEP_PULSE_US = 6;
+const unsigned int BELT_RAMP_STEP_HZ = 30;
 const unsigned long BELT_RAMP_INTERVAL_MS = 10;
 const unsigned int BELT_MIN_HZ = 100;
 const unsigned int BELT_MAX_HZ = 10000;
@@ -203,7 +203,7 @@ void applyApiDelayCompensation() {
 
   unsigned int targetHz = baseHz;
   if (hasPending) {
-    if (maxProgress >= 0.8f) {
+    if (maxProgress >= 0.7f) {
       targetHz = 0;
     } else if (maxProgress >= 0.5f) {
       targetHz = baseHz / 2;

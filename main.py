@@ -289,7 +289,7 @@ class HardwareController(QThread):
         self.ser = None
         self._pending_count = 0
         self._count_lock = threading.Lock()
-        self._ai_semaphore = threading.Semaphore(4)
+        self._ai_semaphore = threading.Semaphore(12)
         self.hw_config = hw_config
         self.prompt_text = DEFAULT_AI_PROMPT
         self.cached_coeffs = calculate_5th_polynomial_coeffs(target_steps)
