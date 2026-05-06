@@ -1,0 +1,16 @@
+[project]
+name = "conveyor-sorting-system"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python",
+    "pyserial",
+    "python-dotenv",
+    "google-genai",
+    "PyQt6",
+    "pyqtgraph",
+    "numpy",
+]
+
+[project.scripts]
+start = "main:main"
