@@ -27,7 +27,7 @@ MOTOR_MICROSTEP_SETTING = 16
 SERIAL_PORT = 'COM4'        # 시리얼 포트
 BAUD_RATE = 115200          
 CAMERA_INDEX = 0            # 카메라 번호
-AI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'     # AI 모델
+AI_MODEL_NAME = 'gemini-3.1-flash-lite'     # AI 모델
 DEFAULT_AI_PROMPT = (
     "Analyze this object. If the object color is closer to blue, response exactly with '0'. "
     "If it is closer to yellow, response exactly with '1'. Respond only with a single digit, either '1' or '0'."
