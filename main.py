@@ -21,7 +21,7 @@ from dashboard import DashboardApp
 # ==================== 기본 상수 (Defaults) ====================
 IR_TO_SORTER_DISTANCE_STEPS = 100000
 BELT_STEPS_PER_SECOND = 2000
-SORTER_TARGET_DEGREE = 90
+SORTER_TARGET_DEGREE = 70
 MOTOR_FULL_STEPS_PER_REV = 200
 MOTOR_MICROSTEP_SETTING = 16
 SERIAL_PORT = 'COM4'        # 시리얼 포트
@@ -182,7 +182,14 @@ def build_test_trigger_packet() -> bytes:
 def init_hardware():
     print(f"[{time.strftime('%H:%M:%S')}] 카메라({CAMERA_INDEX})를 초기화 중입니다...")
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-    if not cap.isOpened():
+    if cap.isOpened():
+        # Force strict 16:9 widescreen HD resolution to eliminate any black bars
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        print(f"[카메라 설정] 해상도가 {w}x{h} (비율: {w/h if h > 0 else 0:.2f})로 성공적으로 로드되었습니다.")
+    else:
         print(f"경고: 카메라 {CAMERA_INDEX}를 열 수 없습니다.")
 
     print(f"[{time.strftime('%H:%M:%S')}] 시리얼 포트({SERIAL_PORT}) 연결 시도 중...")
@@ -272,17 +279,19 @@ def send_test_trigger_to_arduino(ser: serial.Serial):
 class HardwareController(QThread):
     frame_ready = pyqtSignal(object)
     ai_image_ready = pyqtSignal(object)
-    classification_finished = pyqtSignal(int, float, tuple, str)
+    classification_started = pyqtSignal(int, str)
+    classification_finished = pyqtSignal(int, int, float, tuple, str)
     connection_status = pyqtSignal(bool, bool)
     api_status = pyqtSignal(bool)
     queue_updated = pyqtSignal(int)
     settings_apply_result = pyqtSignal(bool, str, dict)
 
-    def __init__(self, target_steps, client, hw_config: HardwareConfig):
+    def __init__(self, target_steps, client, hw_config: HardwareConfig, run_folder: str = ""):
         super().__init__()
         self.target_steps = target_steps
         self.client = client
         self.running = True
+        self.run_folder = run_folder
         self._ir_events = deque()
         self._ir_lock = threading.Lock()
         self.cap = None
@@ -298,6 +307,7 @@ class HardwareController(QThread):
         self._pending_config_dict = None
         self._virtual_delay_lock = threading.Lock()
         self.virtual_delay_sec = 0.0
+        self._simulated_event_counter = 0
 
     def _enqueue_ir_event(self, event_id: int):
         with self._ir_lock:
@@ -324,7 +334,9 @@ class HardwareController(QThread):
     def trigger_test_event(self):
         ok = send_test_trigger_to_arduino(self.ser)
         if not ok:
-            print('테스트 트리거 전송 실패: 시리얼 포트 미연결')
+            print('시리얼 포트 미연결: 대시보드 가상 IR 센서 이벤트를 즉시 강제 트리거합니다.')
+            self._simulated_event_counter += 1
+            self._enqueue_ir_event(self._simulated_event_counter)
 
     @pyqtSlot(str)
     def update_prompt(self, prompt_text: str):
@@ -463,6 +475,7 @@ class HardwareController(QThread):
                 if client and frame_copy is not None:
                     with self._virtual_delay_lock:
                         local_virtual_delay = self.virtual_delay_sec
+                        self.virtual_delay_sec = 0.0
                     if local_virtual_delay > 0.0:
                         time.sleep(local_virtual_delay)
                     classify_flag, raw_text = classify_image_with_ai(client, frame_copy, self.prompt_text)
@@ -477,8 +490,22 @@ class HardwareController(QThread):
             api_delay = time.time() - start_time
             print(f'AI 모델 예측 및 API 왕복 지연 시간: {api_delay:.3f} 초')
 
+            if self.run_folder:
+                try:
+                    event_folder = os.path.join(self.run_folder, str(event_id))
+                    os.makedirs(event_folder, exist_ok=True)
+                    if frame_copy is not None:
+                        img_path = os.path.join(event_folder, "image.jpg")
+                        cv2.imwrite(img_path, frame_copy)
+                    res_path = os.path.join(event_folder, "response.txt")
+                    with open(res_path, "w", encoding="utf-8") as f:
+                        f.write(raw_text)
+                    print(f"[로컬 아카이브 저장 완료] ID {event_id}: {event_folder}")
+                except Exception as e:
+                    print(f"[로컬 아카이브 저장 실패] {e}")
+
             send_event_to_arduino(ser, event_id, classify_flag)
-            self.classification_finished.emit(classify_flag, api_delay, self.cached_coeffs, raw_text)
+            self.classification_finished.emit(event_id, classify_flag, api_delay, self.cached_coeffs, raw_text)
         finally:
             with self._count_lock:
                 self._pending_count -= 1
@@ -532,8 +559,10 @@ class HardwareController(QThread):
 
             event_id = self._dequeue_ir_event()
             if event_id is not None:
-                print(f"\n[{time.strftime('%H:%M:%S')}] IR 감지(event_id={event_id}). 비동기 처리 시작")
+                start_time_str = time.strftime('%H:%M:%S')
+                print(f"\n[{start_time_str}] IR 감지(event_id={event_id}). 비동기 처리 시작")
                 start_time = time.time()
+                self.classification_started.emit(event_id, start_time_str)
 
                 if not ret or frame is None:
                     print('사진 캡처 실패. 더미 데이터로 진행')
@@ -572,13 +601,35 @@ def main():
 
     client = genai.Client(vertexai=True, api_key=api_key) if api_key else None
 
+    # Load persistent prompt from config if exists
+    global DEFAULT_AI_PROMPT
+    config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+    prompt_file = os.path.join(config_dir, "prompt.txt")
+    if os.path.exists(prompt_file):
+        try:
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                saved_prompt = f.read().strip()
+            if saved_prompt:
+                DEFAULT_AI_PROMPT = saved_prompt
+                print(f"[설정 로드] 저장되어 있던 AI 프롬프트를 불러왔습니다.")
+        except Exception as e:
+            print(f"저장된 프롬프트 로드 실패: {e}")
+
     hw_config = load_hw_config()
     steps_per_degree = (MOTOR_FULL_STEPS_PER_REV * MOTOR_MICROSTEP_SETTING) / 360.0
     target_steps = int(SORTER_TARGET_DEGREE * steps_per_degree)
     print(f'설정된 목표 이동 스텝 수(종단점): {target_steps} steps')
 
+    run_folder_name = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_folder = os.path.join(base_dir, "history")
+    os.makedirs(parent_folder, exist_ok=True)
+    run_folder_path = os.path.join(parent_folder, run_folder_name)
+    os.makedirs(run_folder_path, exist_ok=True)
+    print(f"[로컬 로그 아카이빙] 세션 런 폴더가 생성되었습니다: {run_folder_path}")
+
     app = QApplication([])
-    dashboard = DashboardApp(initial_prompt=DEFAULT_AI_PROMPT)
+    dashboard = DashboardApp(initial_prompt=DEFAULT_AI_PROMPT, run_folder=run_folder_path)
     dashboard.set_hardware_info(
         SORTER_TARGET_DEGREE,
         hw_config.belt_steps_per_sec,
@@ -594,9 +645,10 @@ def main():
     dashboard.set_runtime_settings(asdict(hw_config))
     dashboard.show()
 
-    hw_thread = HardwareController(target_steps, client, hw_config)
+    hw_thread = HardwareController(target_steps, client, hw_config, run_folder=run_folder_path)
     hw_thread.frame_ready.connect(dashboard.set_live_frame)
     hw_thread.ai_image_ready.connect(dashboard.set_ai_image)
+    hw_thread.classification_started.connect(dashboard.add_classification_started)
     hw_thread.classification_finished.connect(dashboard.add_classification_result)
     hw_thread.connection_status.connect(dashboard.update_connection_status)
     hw_thread.api_status.connect(dashboard.update_api_status)
